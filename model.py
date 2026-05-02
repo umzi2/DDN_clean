@@ -664,6 +664,7 @@ class DDN(nn.Module):
         b, _, h, w = inp.shape
         result = torch.zeros([b, 1, h, w]).to(inp)
         for scale in self.scales:
+
             x = F.interpolate(
                 inp,
                 scale_factor=scale,
@@ -672,11 +673,12 @@ class DDN(nn.Module):
                 align_corners=True,
             )
             x = self.real_forward(x)
+
             x = F.interpolate(
                 x, size=(h, w), mode="bilinear", antialias=True, align_corners=True
             )
             result = result + x
-        return result
+        return result/len(self.scales)
 
     def one_scale(self, x: torch.Tensor) -> torch.Tensor:
         _, _, h, w = x.shape
