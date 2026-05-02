@@ -50,7 +50,7 @@ class Scale(nn.Module):
         self.scale = nn.Parameter(init_value * torch.ones(dim), requires_grad=trainable)
 
     def forward(self, x):
-        return x * self.scale
+        return x.mul_(self.scale)
 
 
 class SquaredReLU(nn.Module):
@@ -123,27 +123,28 @@ class Attention(nn.Module):
         self.attention_dim = self.num_heads * self.head_dim
 
         self.qkv = nn.Linear(dim, self.attention_dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(self.attention_dim, dim, bias=proj_bias)
-        self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x):
         B, H, W, C = x.shape
         N = H * W
-        qkv = (
-            self.qkv(x)
-            .reshape(B, N, 3, self.num_heads, self.head_dim)
-            .permute(2, 0, 3, 1, 4)
+
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
+        q, k, v = qkv.unbind(2)
+
+        # (B, heads, N, dim)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        x = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
         )
-        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, H, W, self.attention_dim)
+        x = x.transpose(1, 2).reshape(B, H, W, self.attention_dim)
         x = self.proj(x)
-        x = self.proj_drop(x)
         return x
 
 
@@ -257,16 +258,12 @@ class Mlp(nn.Module):
 
         self.fc1 = nn.Linear(in_features, hidden_features, bias=bias)
         self.act = act_layer()
-        self.drop1 = nn.Dropout(drop)
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias)
-        self.drop2 = nn.Dropout(drop)
 
     def forward(self, x):
         x = self.fc1(x)
         x = self.act(x)
-        x = self.drop1(x)
         x = self.fc2(x)
-        x = self.drop2(x)
         return x
 
 
@@ -287,13 +284,11 @@ class MlpHead(nn.Module):
         self.act = act_layer()
         self.norm = norm_layer(hidden_features)
         self.fc2 = nn.Linear(hidden_features, num_classes, bias=bias)
-        self.head_dropout = nn.Dropout(head_dropout)
 
     def forward(self, x):
         x = self.fc1(x)
         x = self.act(x)
         x = self.norm(x)
-        x = self.head_dropout(x)
         x = self.fc2(x)
         return x
 
@@ -664,7 +659,6 @@ class DDN(nn.Module):
         b, _, h, w = inp.shape
         result = torch.zeros([b, 1, h, w]).to(inp)
         for scale in self.scales:
-
             x = F.interpolate(
                 inp,
                 scale_factor=scale,
@@ -678,7 +672,7 @@ class DDN(nn.Module):
                 x, size=(h, w), mode="bilinear", antialias=True, align_corners=True
             )
             result = result + x
-        return result/len(self.scales)
+        return result / len(self.scales)
 
     def one_scale(self, x: torch.Tensor) -> torch.Tensor:
         _, _, h, w = x.shape
